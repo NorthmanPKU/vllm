@@ -346,7 +346,7 @@ class CudaPlatformBase(Platform):
         FLASH_ATTN_V1 = "vllm.v1.attention.backends.flash_attn.FlashAttentionBackend"  # noqa: E501
         TREE_ATTN_V1 = "vllm.v1.attention.backends.tree_attn.TreeAttentionBackend"  # noqa: E501
         XFORMERS_V1 = "vllm.v1.attention.backends.xformers.XFormersAttentionBackend"  # noqa: E501
-        MIRAGE_V1 = "vllm.v1.attention.backends.mirage.MirageBackend"  # noqa: E501
+        MIRAGE_V1 = "vllm.v1.attention.backends.mirage.MirageAttentionBackend"  # noqa: E501
 
         use_fp8_kv_cache = kv_cache_dtype is not None and kv_cache_dtype.startswith(
             "fp8"
