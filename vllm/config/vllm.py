@@ -693,6 +693,8 @@ class VllmConfig:
             # disable cudagraph when enforce eager execution
             disable_cuda_graph = (
                 (self.model_config is not None and self.model_config.enforce_eager)
+                or (self.compilation_config.backend == "mirage_byname")
+                or (self.compilation_config.backend == "mirage_multi_turn")
             )
             if disable_cuda_graph:
                 logger.info("Cudagraph is disabled under eager mode")
@@ -707,7 +709,7 @@ class VllmConfig:
         else:
             self.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
             
-        if self.compilation_config.backend == "mirage_byname":
+        if "mirage" in self.compilation_config.backend:
             if envs.VLLM_ATTENTION_BACKEND is None:
                 envs.VLLM_ATTENTION_BACKEND = "MIRAGE"
             elif envs.VLLM_ATTENTION_BACKEND != "MIRAGE":
