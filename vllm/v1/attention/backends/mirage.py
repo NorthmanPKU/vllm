@@ -111,6 +111,8 @@ class MirageAttentionMetadata:
     paged_kv_indptr_gpu: torch.Tensor | None = None
     paged_kv_indices_gpu: torch.Tensor | None = None
     paged_kv_last_page_len_gpu: torch.Tensor | None = None
+    prompt_lengths: torch.Tensor | None = None
+    lm_head_weight: torch.Tensor | None = None
 
 
 class MirageAttentionMetadataBuilder(AttentionMetadataBuilder[MirageAttentionMetadata]):
@@ -145,6 +147,7 @@ class MirageAttentionMetadataBuilder(AttentionMetadataBuilder[MirageAttentionMet
             self.model_config.max_model_len, self.kv_cache_spec.block_size
         )
         max_num_reqs = vllm_config.scheduler_config.max_num_seqs
+        max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         max_num_pages = max_num_reqs * max_num_pages_per_req
 
         self.num_qo_heads = self.model_config.get_num_attention_heads(
@@ -179,14 +182,18 @@ class MirageAttentionMetadataBuilder(AttentionMetadataBuilder[MirageAttentionMet
             max_num_reqs, dtype=torch.int32, device="cpu", pin_memory=pin_memory
         )
         self.paged_kv_last_page_len_np = self.paged_kv_last_page_len_cpu.numpy()
-
+        self.prompt_lengths = torch.zeros(
+            max_num_tokens, dtype=torch.int32, device=self.device
+        )
     def build(
         self,
         common_prefix_len: int,
         common_attn_metadata: CommonAttentionMetadata,
-        fast_build: bool = False,
+        prompt_token_number: np.ndarray | None = None,
+        lm_head_weight: torch.Tensor | None = None,
     ) -> MirageAttentionMetadata:
         num_reqs = common_attn_metadata.num_reqs
+        num_tokens = common_attn_metadata.num_actual_tokens
 
         page_size = self.page_size
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu
@@ -230,13 +237,17 @@ class MirageAttentionMetadataBuilder(AttentionMetadataBuilder[MirageAttentionMet
             self.paged_kv_last_page_len_cpu[:num_reqs], non_blocking=True
         )
 
-        # uses_spec_reorder = self.reorder_batch_threshold > 1
+        self.prompt_lengths[:num_tokens].copy_(
+            torch.from_numpy(prompt_token_number[:num_tokens]), non_blocking=True
+        )
 
         attn_metadata = MirageAttentionMetadata(
             qo_indptr_gpu=common_attn_metadata.query_start_loc,
             paged_kv_indptr_gpu=paged_kv_indptr,
             paged_kv_indices_gpu=paged_kv_indices,
             paged_kv_last_page_len_gpu=paged_kv_last_page_len,
+            prompt_lengths=self.prompt_lengths,
+            lm_head_weight=lm_head_weight,
         )
 
         return attn_metadata

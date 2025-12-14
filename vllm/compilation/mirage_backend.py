@@ -67,6 +67,7 @@ def build_model_config(
     v_cache_tensors: list[torch.Tensor],
     position_embeddings_: torch.Tensor,
     parallel_config: ParallelConfig,
+    mpk_mode: str,
 ) -> MirageModelConfig:
     whole_dim = position_embeddings_.shape[-1]
     cos_tensor_ = position_embeddings_[:, 0:whole_dim//2].unsqueeze(0)
@@ -92,7 +93,7 @@ def build_model_config(
         position_embeddings=position_embeddings,
         # model weights
         state_dict=state_dict,
-        with_lm_head=False,
+        with_lm_head = (True if mpk_mode == "online_multi_turn" else False),
     )
     return mirage_model_config
 
@@ -100,6 +101,7 @@ def build_mpk_metadata(
         vllm_config: VllmConfig, 
         args: list[Any],
         transfered_tensor_names: list[str],
+        mpk_mode: str,
     ) -> MPKMetadata:
     forward_context = get_forward_context()
     model_config = vllm_config.model_config
@@ -174,6 +176,9 @@ def build_mpk_metadata(
             state_dict[name] = gate_up_tensor
         else:
             state_dict[name] = arg
+            
+    if mpk_mode == "online_multi_turn" and attn_metadata.lm_head_weight is not None:
+        state_dict["lm_head.weight"] = attn_metadata.lm_head_weight
     
     mirage_model_config = build_model_config(
         model_config,
@@ -182,9 +187,10 @@ def build_mpk_metadata(
         v_cache_tensors,
         position_embeddings,
         parallel_config,
+        mpk_mode,
     )
     mpk_metadata = MPKMetadata(
-        mode = "online_notoken",
+        mode = mpk_mode,
         # total_num_requests
         # num_remote_schedulers: int = 0
         max_seq_length = model_config.max_model_len,
@@ -207,7 +213,7 @@ def build_mpk_metadata(
         input_tokens = input_token_ids,
         # output_tokens: Optional[torch.Tensor] = None
         # num_new_tokens: Optional[torch.Tensor] = None
-        # prompt_lengths: Optional[torch.Tensor] = None
+        prompt_lengths=attn_metadata.prompt_lengths,
         qo_indptr_buffer = attn_metadata.qo_indptr_gpu,
         paged_kv_indptr_buffer = attn_metadata.paged_kv_indptr_gpu,
         paged_kv_indices_buffer = attn_metadata.paged_kv_indices_gpu,
@@ -297,11 +303,18 @@ class MirageBackend:
             
             if not self.compiled:
                 # Compile only at the first call -- when we get real tensors
-                logger.info("[Mirage] Calling compile_or_call for the first time, compiling......!")
+                logger.info("[Mirage Backend] Calling compile_or_call for the first time, compiling......!")
+                if self.compilation_config.backend == "mirage_byname":
+                    mpk_mode = "online_notoken"
+                elif self.compilation_config.backend == "mirage_multi_turn":
+                    mpk_mode = "online_multi_turn"
+                else:
+                    raise ValueError(f"No supported mode for mirage backend: {self.compilation_config.backend}")
                 mpk_metadata = build_mpk_metadata(
                     self.vllm_config,
                     args,
                     transfered_tensor_names,
+                    mpk_mode,
                 )
                 logger.info(f"[Mirage] MPK metadata: {mpk_metadata.info_as_string()}")
                 self.mpk = MPK(mpk_metadata)
@@ -311,8 +324,12 @@ class MirageBackend:
                 self.compiled = True
                 
             default_stream = torch.cuda.current_stream()
-            result_hidden_states = self.mpk(default_stream = default_stream)
-            
-            return (result_hidden_states,)
+            result = self.mpk(default_stream = default_stream)
+
+            if self.compilation_config.backend == "mirage_byname":
+                return (result,)
+            elif self.compilation_config.backend == "mirage_multi_turn":
+                return result
+            return result
         
         return compile_or_call
