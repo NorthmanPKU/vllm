@@ -1037,6 +1037,13 @@ class Scheduler(SchedulerInterface):
             generated_token_ids = (
                 sampled_token_ids[req_index] if sampled_token_ids else []
             )
+            num_generated = len(generated_token_ids)
+            is_spec_decoding = (req_id in scheduler_output.scheduled_spec_decode_tokens)
+            if not is_spec_decoding and num_generated > num_tokens_scheduled:
+                # Generated tokens are more than the tokens scheduled
+                # e.g. using mirage_multi_turn
+                extra_computed_tokens = num_generated - num_tokens_scheduled
+                request.num_computed_tokens += extra_computed_tokens
 
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id)

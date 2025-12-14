@@ -95,6 +95,7 @@ from vllm.utils.torch_utils import (
     supports_dynamo,
 )
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+from vllm.v1.attention.backends.mirage import MirageAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import (
     AttentionCGSupport,
     AttentionMetadataBuilder,
@@ -257,6 +258,7 @@ class ExecuteModelState(NamedTuple):
     sample_hidden_states: torch.Tensor
     aux_hidden_states: list[torch.Tensor] | None
     ec_connector_output: ECConnectorOutput | None
+    sampled_token_ids: torch.Tensor | None = None
 
 
 class GPUModelRunner(
@@ -1654,6 +1656,14 @@ class GPUModelRunner(
                             :num_reqs_padded
                         ],
                     )
+                if isinstance(builder, MirageAttentionMetadataBuilder):
+                    # Pass prompt token nums
+                    extra_attn_metadata_args = dict(
+                        prompt_token_number=self.input_batch.num_prompt_tokens[
+                            :num_reqs_padded
+                        ],
+                        lm_head_weight=self.model.lm_head.weight,
+                    )
 
                 if ubatch_slices is not None:
                     common_attn_metadata_list = split_attn_metadata(
@@ -2681,10 +2691,13 @@ class GPUModelRunner(
         )
 
         # Compute prompt logprobs if needed.
-        prompt_logprobs_dict = self._get_prompt_logprobs_dict(
-            hidden_states[:num_scheduled_tokens],
-            scheduler_output.num_scheduled_tokens,
-        )
+        if hidden_states is not None:
+            prompt_logprobs_dict = self._get_prompt_logprobs_dict(
+                hidden_states[:num_scheduled_tokens],
+                scheduler_output.num_scheduled_tokens,
+            )
+        else:
+            prompt_logprobs_dict = {}
 
         return (
             num_nans_in_logits,
@@ -3003,6 +3016,26 @@ class GPUModelRunner(
             )
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
+            # Check if model_output contains tokens (integer tensor)
+            # This indicates we are running in a mode (e.g. MPK) where the model 
+            # returns sampled tokens directly.
+            if isinstance(model_output, torch.Tensor) and (
+                model_output.dtype == torch.int32 or model_output.dtype == torch.int64
+            ):
+                self.execute_model_state = ExecuteModelState(
+                    scheduler_output,
+                    None,
+                    spec_decode_metadata,
+                    spec_decode_common_attn_metadata,
+                    None,
+                    None,
+                    None,
+                    ec_connector_output,
+                    sampled_token_ids=model_output,
+                )
+                self.kv_connector_output = kv_connector_output
+                return None
+
             if self.use_aux_hidden_state_outputs:
                 # True when EAGLE 3 is used.
                 hidden_states, aux_hidden_states = model_output
@@ -3104,6 +3137,7 @@ class GPUModelRunner(
             sample_hidden_states,
             aux_hidden_states,
             ec_connector_output,
+            sampled_token_ids,
         ) = self.execute_model_state
         # Clear ephemeral state.
         self.execute_model_state = None
@@ -3113,9 +3147,22 @@ class GPUModelRunner(
             apply_grammar_bitmask(
                 scheduler_output, grammar_output, self.input_batch, logits
             )
+        if sampled_token_ids is not None:
+            # We already have sampled tokens from the model (e.g. MPK).
+            # We can skip sampling and bookkeeping.
+            req_ids = self.input_batch.req_ids
+            req_id_to_index = {rid: idx for idx, rid in enumerate(req_ids)}
 
-        with record_function_or_nullcontext("gpu_model_runner: sample"):
-            sampler_output = self._sample(logits, spec_decode_metadata)
+            if sampled_token_ids.ndim == 1:
+                sampled_token_ids = sampled_token_ids.unsqueeze(0)
+            
+            sampler_output = SamplerOutput(
+                sampled_token_ids=sampled_token_ids,
+                logprobs_tensors=None,
+            )
+        else:
+            with record_function_or_nullcontext("gpu_model_runner: sample"):
+                sampler_output = self._sample(logits, spec_decode_metadata)
 
         self.input_batch.prev_sampled_token_ids = None
 
