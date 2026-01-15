@@ -39,13 +39,13 @@ from vllm.multimodal.parse import (
     MultiModalDataItems,
 )
 from vllm.multimodal.processing import (
+    BaseDummyInputsBuilder,
     BaseMultiModalProcessor,
     BaseProcessingInfo,
     PromptReplacement,
     PromptUpdate,
     PromptUpdateDetails,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
@@ -647,8 +647,6 @@ class SkyworkR1VMultiModalProcessor(BaseMultiModalProcessor[SkyworkR1VProcessing
     dummy_inputs=SkyworkR1VDummyInputsBuilder,
 )
 class SkyworkR1VChatModel(nn.Module, SupportsMultiModal, SupportsPP):
-    merge_by_field_config = True
-
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("image"):
