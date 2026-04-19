@@ -125,6 +125,7 @@ from vllm.v1.attention.backend import (
 )
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadataBuilder
+from vllm.v1.attention.backends.mirage import MirageAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import (
     NULL_BLOCK_ID,
     create_fast_prefill_custom_backend,
@@ -389,6 +390,7 @@ class ExecuteModelState(NamedTuple):
     ec_connector_output: ECConnectorOutput | None
     cudagraph_stats: CUDAGraphStat | None
     slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None
+    sampled_token_ids: torch.Tensor | None = None
 
 
 class GPUModelRunner(
@@ -2242,6 +2244,13 @@ class GPUModelRunner(
                         :num_reqs_padded
                     ],
                 )
+            if isinstance(builder, MirageAttentionMetadataBuilder):
+                extra_attn_metadata_args = dict(
+                    prompt_token_number=self.input_batch.num_prompt_tokens[
+                        :num_reqs_padded
+                    ],
+                    lm_head_weight=self.model.lm_head.weight,
+                )
 
             if for_cudagraph_capture:
                 attn_metadata_i = builder.build_for_cudagraph_capture(
@@ -3450,10 +3459,13 @@ class GPUModelRunner(
             req_state.output_token_ids.extend(sampled_ids)
 
         # Compute prompt logprobs if needed.
-        prompt_logprobs_dict = self._get_prompt_logprobs_dict(
-            hidden_states[:num_scheduled_tokens],
-            scheduler_output.num_scheduled_tokens,
-        )
+        if hidden_states is not None:
+            prompt_logprobs_dict = self._get_prompt_logprobs_dict(
+                hidden_states[:num_scheduled_tokens],
+                scheduler_output.num_scheduled_tokens,
+            )
+        else:
+            prompt_logprobs_dict = {}
 
         return (
             num_nans_in_logits,
@@ -4041,6 +4053,29 @@ class GPUModelRunner(
             )
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
+            # Check if model_output contains tokens (integer tensor).
+            # This indicates we are running in a mode (e.g. MPK multi-turn)
+            # where the model returns sampled tokens directly.
+            if isinstance(model_output, torch.Tensor) and (
+                model_output.dtype == torch.int32
+                or model_output.dtype == torch.int64
+            ):
+                self.execute_model_state = ExecuteModelState(
+                    scheduler_output,
+                    None,
+                    spec_decode_metadata,
+                    spec_decode_common_attn_metadata,
+                    None,
+                    None,
+                    None,
+                    ec_connector_output,
+                    cudagraph_stats,
+                    slot_mappings,
+                    sampled_token_ids=model_output,
+                )
+                self.kv_connector_output = kv_connector_output
+                return None
+
             if self.use_aux_hidden_state_outputs:
                 # True when EAGLE 3 is used.
                 hidden_states, aux_hidden_states = model_output
@@ -4143,29 +4178,39 @@ class GPUModelRunner(
             return output
 
         # Unpack ephemeral state.
-        (
-            scheduler_output,
-            logits,
-            spec_decode_metadata,
-            spec_decode_common_attn_metadata,
-            hidden_states,
-            sample_hidden_states,
-            aux_hidden_states,
-            ec_connector_output,
-            cudagraph_stats,
-            slot_mappings,
-        ) = self.execute_model_state
+        state = self.execute_model_state
+        scheduler_output = state.scheduler_output
+        logits = state.logits
+        spec_decode_metadata = state.spec_decode_metadata
+        spec_decode_common_attn_metadata = state.spec_decode_common_attn_metadata
+        hidden_states = state.hidden_states
+        sample_hidden_states = state.sample_hidden_states
+        aux_hidden_states = state.aux_hidden_states
+        ec_connector_output = state.ec_connector_output
+        cudagraph_stats = state.cudagraph_stats
+        slot_mappings = state.slot_mappings
+        sampled_token_ids = state.sampled_token_ids
         # Clear ephemeral state.
         self.execute_model_state = None
 
-        # Apply structured output bitmasks if present.
-        if grammar_output is not None:
-            apply_grammar_bitmask(
-                scheduler_output, grammar_output, self.input_batch, logits
+        if sampled_token_ids is not None:
+            # We already have sampled tokens from the model (e.g. MPK
+            # multi-turn). Skip sampling and logits processing.
+            if sampled_token_ids.ndim == 1:
+                sampled_token_ids = sampled_token_ids.unsqueeze(0)
+            sampler_output = SamplerOutput(
+                sampled_token_ids=sampled_token_ids,
+                logprobs_tensors=None,
             )
+        else:
+            # Apply structured output bitmasks if present.
+            if grammar_output is not None:
+                apply_grammar_bitmask(
+                    scheduler_output, grammar_output, self.input_batch, logits
+                )
 
-        with record_function_or_nullcontext("gpu_model_runner: sample"):
-            sampler_output = self._sample(logits, spec_decode_metadata)
+            with record_function_or_nullcontext("gpu_model_runner: sample"):
+                sampler_output = self._sample(logits, spec_decode_metadata)
 
         self._update_states_after_model_execute(
             sampler_output.sampled_token_ids, scheduler_output

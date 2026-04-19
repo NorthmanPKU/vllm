@@ -1103,6 +1103,10 @@ class VllmConfig:
                     f"backend. Got {self.attention_config.backend}")
             assert self.cache_config.block_size % 64 == 0, \
                 "Block size must be a multiple of 64 for mirage backend."
+            if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
+                logger.info(
+                    "Disabling CUDAGraph for mirage backend.")
+                self.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
 
         if self.cache_config.kv_sharing_fast_prefill:
             if (
