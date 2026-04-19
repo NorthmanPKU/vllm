@@ -1028,6 +1028,9 @@ class CompilationConfig:
         ]:
             if self.backend in torch_backends:
                 return self.backend
+            if "mirage" in self.backend:
+                from vllm.compilation.mirage_backend import MirageBackend
+                return MirageBackend(vllm_config)
             return resolve_obj_by_qualname(self.backend)
 
         assert self.mode == CompilationMode.VLLM_COMPILE

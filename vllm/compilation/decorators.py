@@ -482,7 +482,9 @@ def _support_torch_compile(
         ds_type = self.compilation_config.dynamic_shapes_config.type
         cache_dir = None
         aot_compilation_path = None
-        if envs.VLLM_USE_AOT_COMPILE:
+        _is_mirage = (self.vllm_config.compilation_config.backend
+                      and "mirage" in self.vllm_config.compilation_config.backend)
+        if envs.VLLM_USE_AOT_COMPILE and not _is_mirage:
             """
             When using torch.compile in AOT mode, we store the cache artifacts
             under VLLM_CACHE_ROOT/torch_compile_cache/torch_aot_compile/{hash}
@@ -537,6 +539,8 @@ def _support_torch_compile(
             assert (
                 not envs.VLLM_USE_AOT_COMPILE
                 or self.vllm_config.compilation_config.backend == "eager"
+                or (self.vllm_config.compilation_config.backend
+                    and "mirage" in self.vllm_config.compilation_config.backend)
             )
             return TorchCompileWithNoGuardsWrapper.__call__(self, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -612,6 +616,9 @@ def _support_torch_compile(
             use_aot_compile = envs.VLLM_USE_AOT_COMPILE
             if self.vllm_config.compilation_config.backend == "eager":
                 logger.warning("Detected eager backend, disabling AOT compile.")
+                use_aot_compile = False
+            if (self.vllm_config.compilation_config.backend
+                    and "mirage" in self.vllm_config.compilation_config.backend):
                 use_aot_compile = False
             if use_aot_compile:
                 # store the path for saving after warmup

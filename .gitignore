@@ -243,5 +243,21 @@ vllm/grpc/vllm_engine_pb2.py
 vllm/grpc/vllm_engine_pb2_grpc.py
 vllm/grpc/vllm_engine_pb2.pyi
 
-# Ignore generated cpu headers 
+# Ignore generated cpu headers
 csrc/cpu/cpu_attn_dispatch_generated.h
+
+# Mirage / MPK working files
+results/
+outputs/
+mirage_backend_output/
+vllm_profile/
+results_mpk/
+permanent_output_dir/
+mpk_profile_*.json
+vllm_profile_*.json
+offline.py
+run_offline.sh
+run_benchmarks.sh
+parse_results.py
+stat_dec7.py
+/csrc/quantization

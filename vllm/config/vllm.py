@@ -1090,6 +1090,20 @@ class VllmConfig:
         else:
             self.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
 
+        if (self.compilation_config.backend
+                and "mirage" in self.compilation_config.backend):
+            from vllm.v1.attention.backends.registry import (
+                AttentionBackendEnum,
+            )
+            if self.attention_config.backend is None:
+                self.attention_config.backend = AttentionBackendEnum.MIRAGE
+            elif self.attention_config.backend != AttentionBackendEnum.MIRAGE:
+                raise ValueError(
+                    "Must use MIRAGE attention backend with mirage "
+                    f"backend. Got {self.attention_config.backend}")
+            assert self.cache_config.block_size % 64 == 0, \
+                "Block size must be a multiple of 64 for mirage backend."
+
         if self.cache_config.kv_sharing_fast_prefill:
             if (
                 self.speculative_config is not None

@@ -183,7 +183,10 @@ class TorchCompileWithNoGuardsWrapper:
         return self._compiled_callable.aot_compile((args, kwargs))
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if envs.VLLM_USE_BYTECODE_HOOK:
+        if envs.VLLM_USE_BYTECODE_HOOK and not (
+            self.vllm_config.compilation_config.backend
+            and "mirage" in self.vllm_config.compilation_config.backend
+        ):
             if (
                 self.vllm_config.compilation_config.mode
                 == CompilationMode.STOCK_TORCH_COMPILE
